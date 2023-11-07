@@ -206,6 +206,9 @@ if __name__ == "__main__":
         premature_layer_dist = {l:0 for l in candidate_premature_layers}
     answers = []
     result_dict = {'is_correct': [], 'model_answer': [], 'model_completion': [], 'full_input_text': []}
+    times = torch.zeros(len(list_data_dict))
+    starter,ender = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+    idx = 0
     for sample in tqdm(list_data_dict):
         context = sample['prefix']
         answer_true = ' ' + sample['completion']
@@ -213,7 +216,13 @@ if __name__ == "__main__":
         for i in range(3):
             answers_false.append(' ' + sample[f'contradiction_{i}'])
         generate_kwargs = dict(max_new_tokens=args.max_new_tokens, do_sample=args.do_sample, top_p=args.top_p, top_k=args.top_k, temperature=args.temperature, repetition_penalty=args.repetition_penalty, mode=mode, mature_layer=mature_layer, premature_layer=premature_layer, candidate_premature_layers=candidate_premature_layers, relative_top=args.relative_top, relative_top_value=args.relative_top_value)
+        starter.record()
         answer_true_log_prob, c_dist = llm.lm_score(context, answer_true, **generate_kwargs)
+        ender.record()
+        torch.cuda.synchronize()
+        current_time = starter.elapsed_time(ender)
+        times[idx] = current_time
+        idx += 1
         if mode == "dola":
             for k, v in c_dist.items():
                 premature_layer_dist[k] += v
@@ -240,8 +249,11 @@ if __name__ == "__main__":
 
         print(f'Num of total question: {len(answers)}, '
             f'correct num: {sum(answers)}, '
-            f'correct rate: {float(sum(answers))/len(answers)}.')
+            f'correct rate: {float(sum(answers))/len(answers)}'
+            f' current_time: {float(current_time)} ms')
 
+    average_time = times.mean().item()
+    Throughput = len(list_data_dict)* args.max_new_tokens*1000/ (times.sum().item())
     if mode == "dola" and args.debug:
         total_tokens = sum(premature_layer_dist.values())
         if total_tokens > 0:
@@ -253,3 +265,5 @@ if __name__ == "__main__":
     with open(output_file, 'w') as f:
         json.dump(result_dict, f)
     print(f"{float(sum(answers))/len(answers)}")
+    print(f'total inferance time: {float(times.sum().item())} '
+          f'thoughput: {Throughput}.')

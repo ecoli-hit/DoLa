@@ -266,12 +266,21 @@ if __name__ == "__main__":
     answers = []
     result_dict = {'is_correct': [], 'model_answer': [], 'model_completion': [], 'full_input_text': []}
     retry_times = args.retry
+    times = torch.zeros(len(list_data_dict))
+    starter,ender = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+    idx = 0
     for sample in tqdm(list_data_dict):
         model_answer = None
         for i in range(retry_times):
             input_text = build_prompt(sample['question'], N_SHOT, COT_FLAG, args.do_shuffle)
             generate_kwargs = dict(max_new_tokens=args.max_new_tokens, do_sample=args.do_sample, top_p=args.top_p, top_k=args.top_k, temperature=args.temperature, repetition_penalty=args.repetition_penalty, mode=mode, mature_layer=mature_layer, premature_layer=premature_layer, candidate_premature_layers=candidate_premature_layers, relative_top=args.relative_top)
+            starter.record()
             model_completion, c_dist = llm.generate(input_text, **generate_kwargs)
+            ender.record()
+            torch.cuda.synchronize()
+            current_time = starter.elapsed_time(ender)
+            times[idx] = current_time
+            idx += 1
             for stop_word in stop_word_list:
                 length_to_remove = len(stop_word)
                 if model_completion[-length_to_remove:] == stop_word:
@@ -299,8 +308,10 @@ if __name__ == "__main__":
 
         print(f'Num of total question: {len(answers)}, '
             f'correct num: {sum(answers)}, '
-            f'correct rate: {float(sum(answers))/len(answers)}.')
-
+            f'correct rate: {float(sum(answers))/len(answers)}'
+            f' current_time: {float(current_time)} ms')
+    average_time = times.mean().item()
+    Throughput = len(list_data_dict)* args.max_new_tokens*1000/ (times.sum().item())
     if mode == "dola" and args.debug:
         total_tokens = sum(premature_layer_dist.values())
         if total_tokens > 0:
@@ -311,4 +322,5 @@ if __name__ == "__main__":
     output_file = args.output_path if args.shard_id is None else (args.output_path+"_"+str(args.shard_id)+".json")
     with open(output_file, 'w') as f:
         json.dump(result_dict, f)
-    print(f"{float(sum(answers))/len(answers)}")
+    print(f"{float(sum(answers))/len(answers)}"
+          f'thoughput: {Throughput}.')
